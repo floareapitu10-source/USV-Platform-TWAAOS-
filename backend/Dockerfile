@@ -10,13 +10,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 
 # Install dependencies
-RUN uv sync --frozen --no-install-project
+RUN uv sync --no-install-project
 
 # Copy application code
 COPY . .
-
-# Sync with the project
-RUN uv sync --frozen
 
 # Production stage
 FROM python:3.12-slim AS runner
