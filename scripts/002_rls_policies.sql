@@ -150,6 +150,10 @@ DROP POLICY IF EXISTS "notifications_select_own" ON notifications;
 CREATE POLICY "notifications_select_own" ON notifications
   FOR SELECT USING (user_id = auth.uid() OR is_admin());
 
+DROP POLICY IF EXISTS "notifications_insert_own" ON notifications;
+CREATE POLICY "notifications_insert_own" ON notifications
+  FOR INSERT WITH CHECK (user_id = auth.uid());
+
 DROP POLICY IF EXISTS "notifications_insert_system" ON notifications;
 CREATE POLICY "notifications_insert_system" ON notifications
   FOR INSERT WITH CHECK (is_organizer() OR is_admin());

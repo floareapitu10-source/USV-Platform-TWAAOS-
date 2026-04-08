@@ -10,6 +10,9 @@ interface EventsPageProps {
     search?: string
     category?: string
     date?: string
+    organizer?: string
+    mode?: string
+    op?: string
   }>
 }
 
@@ -22,6 +25,12 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
     .from('categories')
     .select('*')
     .order('name')
+
+  const { data: organizers } = await supabase
+    .from('profiles')
+    .select('id,full_name')
+    .in('role', ['organizer', 'admin'])
+    .order('full_name')
 
   // Build events query
   let query = supabase
@@ -41,8 +50,35 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
     query = query.or(`title.ilike.%${params.search}%,description.ilike.%${params.search}%`)
   }
 
+  const operator = params.op === 'or' ? 'or' : 'and'
+  const orParts: string[] = []
+
   if (params.category) {
-    query = query.eq('category_id', params.category)
+    if (operator === 'or') {
+      orParts.push(`category_id.eq.${params.category}`)
+    } else {
+      query = query.eq('category_id', params.category)
+    }
+  }
+
+  if (params.organizer) {
+    if (operator === 'or') {
+      orParts.push(`organizer_id.eq.${params.organizer}`)
+    } else {
+      query = query.eq('organizer_id', params.organizer)
+    }
+  }
+
+  if (params.mode) {
+    if (operator === 'or') {
+      orParts.push(`participation_mode.eq.${params.mode}`)
+    } else {
+      query = query.eq('participation_mode', params.mode)
+    }
+  }
+
+  if (orParts.length > 0) {
+    query = query.or(orParts.join(','))
   }
 
   if (params.date) {
@@ -66,7 +102,10 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
         </p>
       </div>
 
-      <EventFilters categories={categories as Category[] || []} />
+      <EventFilters
+        categories={categories as Category[] || []}
+        organizers={(organizers || []) as { id: string; full_name: string | null }[]}
+      />
 
       {typedEvents.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

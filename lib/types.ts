@@ -2,6 +2,8 @@ export type UserRole = 'student' | 'organizer' | 'admin'
 
 export type EventStatus = 'draft' | 'published' | 'cancelled' | 'completed'
 
+export type ParticipationMode = 'in_person' | 'online' | 'hybrid'
+
 export type RegistrationStatus = 'registered' | 'waitlist' | 'cancelled' | 'attended'
 
 export type NotificationType = 'new_event' | 'event_update' | 'event_reminder' | 'registration_confirmed' | 'event_cancelled'
@@ -40,6 +42,9 @@ export interface Event {
   image_url: string | null
   category_id: string | null
   organizer_id: string
+  organizer_name: string | null
+  source_name: string | null
+  participation_mode: ParticipationMode | null
   max_participants: number | null
   is_public: boolean
   is_featured: boolean
@@ -114,6 +119,18 @@ export interface ScrapeLog {
   created_at: string
   // Joined fields
   source?: ScrapedSource
+}
+
+export interface EventFeedback {
+  id: string
+  event_id: string
+  user_id: string
+  rating: number
+  comment: string | null
+  created_at: string
+  updated_at: string
+  // Joined fields
+  user?: Profile
 }
 
 // Form types

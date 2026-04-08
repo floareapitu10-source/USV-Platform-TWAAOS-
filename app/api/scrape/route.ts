@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from "next/server"
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8001"
 
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms))
+}
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
@@ -22,24 +26,46 @@ export async function POST(request: NextRequest) {
     if (profile?.role !== "admin") {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
+
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
     
     const body = await request.json()
     
     // Call Python backend for scraping
-    let response: Response
+    let response: Response | null = null
     try {
-      response = await fetch(`${BACKEND_URL}/scrape`, {
+      const url = `${BACKEND_URL}/scrape`
+      const init: RequestInit = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+          "Authorization": `Bearer ${accessToken}`,
         },
         body: JSON.stringify(body),
-      })
+      }
+
+      const attempts = [0, 400, 1200]
+      let lastError: unknown = null
+      for (const delay of attempts) {
+        if (delay) await sleep(delay)
+        try {
+          response = await fetch(url, init)
+          lastError = null
+          break
+        } catch (e) {
+          lastError = e
+        }
+      }
+      if (lastError) throw lastError
+      if (!response) throw new Error('No response from backend')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return NextResponse.json(
-        { error: `Failed to reach scraping backend at ${BACKEND_URL}: ${message}` },
+        { error: `Failed to reach scraping backend at ${BACKEND_URL}: ${message}`, backend_url: BACKEND_URL },
         { status: 502 }
       )
     }

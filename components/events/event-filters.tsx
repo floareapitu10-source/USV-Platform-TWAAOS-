@@ -10,15 +10,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { Category } from '@/lib/types'
+import type { Category, Profile } from '@/lib/types'
 import { Search, X } from 'lucide-react'
 import { useCallback, useState } from 'react'
 
 interface EventFiltersProps {
   categories: Category[]
+  organizers: Pick<Profile, 'id' | 'full_name'>[]
 }
 
-export function EventFilters({ categories }: EventFiltersProps) {
+export function EventFilters({ categories, organizers }: EventFiltersProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   
@@ -49,12 +50,30 @@ export function EventFilters({ categories }: EventFiltersProps) {
     router.push(`/dashboard/events?${createQueryString('date', e.target.value)}`)
   }
 
+  const handleOrganizerChange = (value: string) => {
+    router.push(`/dashboard/events?${createQueryString('organizer', value === 'all' ? '' : value)}`)
+  }
+
+  const handleModeChange = (value: string) => {
+    router.push(`/dashboard/events?${createQueryString('mode', value === 'all' ? '' : value)}`)
+  }
+
+  const handleOperatorChange = (value: string) => {
+    router.push(`/dashboard/events?${createQueryString('op', value === 'and' ? '' : value)}`)
+  }
+
   const clearFilters = () => {
     setSearch('')
     router.push('/dashboard/events')
   }
 
-  const hasFilters = searchParams.get('search') || searchParams.get('category') || searchParams.get('date')
+  const hasFilters =
+    searchParams.get('search') ||
+    searchParams.get('category') ||
+    searchParams.get('date') ||
+    searchParams.get('organizer') ||
+    searchParams.get('mode') ||
+    searchParams.get('op')
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
@@ -73,6 +92,19 @@ export function EventFilters({ categories }: EventFiltersProps) {
       
       <div className="flex flex-wrap gap-2">
         <Select
+          value={searchParams.get('op') || 'and'}
+          onValueChange={handleOperatorChange}
+        >
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="Operator" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="and">AND</SelectItem>
+            <SelectItem value="or">OR</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select
           value={searchParams.get('category') || 'all'}
           onValueChange={handleCategoryChange}
         >
@@ -86,6 +118,38 @@ export function EventFilters({ categories }: EventFiltersProps) {
                 {category.name}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={searchParams.get('organizer') || 'all'}
+          onValueChange={handleOrganizerChange}
+        >
+          <SelectTrigger className="w-[220px]">
+            <SelectValue placeholder="Organizator" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Toti organizatorii</SelectItem>
+            {organizers.map((o) => (
+              <SelectItem key={o.id} value={o.id}>
+                {o.full_name || o.id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={searchParams.get('mode') || 'all'}
+          onValueChange={handleModeChange}
+        >
+          <SelectTrigger className="w-[190px]">
+            <SelectValue placeholder="Participare" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Toate</SelectItem>
+            <SelectItem value="in_person">Fizic</SelectItem>
+            <SelectItem value="online">Online</SelectItem>
+            <SelectItem value="hybrid">Hibrid</SelectItem>
           </SelectContent>
         </Select>
 

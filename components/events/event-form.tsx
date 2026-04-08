@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { Category, Event, EventStatus } from '@/lib/types'
+import type { Category, Event, EventStatus, ParticipationMode } from '@/lib/types'
 import { Loader2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
@@ -30,6 +30,9 @@ export function EventForm({ categories, organizerId, event }: EventFormProps) {
   const [shortDescription, setShortDescription] = useState(event?.short_description || '')
   const [location, setLocation] = useState(event?.location || '')
   const [locationDetails, setLocationDetails] = useState(event?.location_details || '')
+  const [participationMode, setParticipationMode] = useState<ParticipationMode | '__none__'>(
+    (event?.participation_mode as ParticipationMode | null) || '__none__'
+  )
   const [startDate, setStartDate] = useState(event?.start_date ? new Date(event.start_date).toISOString().slice(0, 16) : '')
   const [endDate, setEndDate] = useState(event?.end_date ? new Date(event.end_date).toISOString().slice(0, 16) : '')
   const [categoryId, setCategoryId] = useState(event?.category_id || '__none__')
@@ -61,6 +64,7 @@ export function EventForm({ categories, organizerId, event }: EventFormProps) {
         short_description: shortDescription || null,
         location: location || null,
         location_details: locationDetails || null,
+        participation_mode: participationMode === '__none__' ? null : participationMode,
         start_date: new Date(startDate).toISOString(),
         end_date: endDate ? new Date(endDate).toISOString() : null,
         category_id: categoryId === '__none__' ? null : categoryId,
@@ -176,6 +180,21 @@ export function EventForm({ categories, organizerId, event }: EventFormProps) {
               placeholder="Ex: Etaj 2, Sala A201"
             />
           </div>
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="participationMode">Modalitate participare</Label>
+          <Select value={participationMode} onValueChange={(v) => setParticipationMode(v as ParticipationMode | '__none__')}>
+            <SelectTrigger>
+              <SelectValue placeholder="Selecteaza" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">Nespecificat</SelectItem>
+              <SelectItem value="in_person">Fizic</SelectItem>
+              <SelectItem value="online">Online</SelectItem>
+              <SelectItem value="hybrid">Hibrid</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">

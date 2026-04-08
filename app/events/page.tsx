@@ -18,6 +18,9 @@ export default function PublicEventsPage() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [selectedCategory, setSelectedCategory] = useState<string>("all")
+  const [selectedOrganizer, setSelectedOrganizer] = useState<string>("all")
+  const [selectedMode, setSelectedMode] = useState<string>("all")
+  const [operator, setOperator] = useState<'and' | 'or'>('and')
 
   useEffect(() => {
     async function fetchData() {
@@ -70,14 +73,38 @@ export default function PublicEventsPage() {
   }, [])
 
   const filteredEvents = events.filter(event => {
-    const matchesSearch = !search || 
+    const matchesSearch =
+      !search ||
       event.title.toLowerCase().includes(search.toLowerCase()) ||
-      event.description?.toLowerCase().includes(search.toLowerCase())
+      Boolean(event.description?.toLowerCase().includes(search.toLowerCase()))
     
     const matchesCategory = selectedCategory === "all" || event.category_id === selectedCategory
 
-    return matchesSearch && matchesCategory
+    const matchesOrganizer = selectedOrganizer === 'all' || event.organizer_id === selectedOrganizer
+
+    const matchesMode = selectedMode === 'all' || (event as any).participation_mode === selectedMode
+
+    if (operator === 'or') {
+      const activeChecks: boolean[] = []
+      if (search) activeChecks.push(matchesSearch)
+      if (selectedCategory !== 'all') activeChecks.push(matchesCategory)
+      if (selectedOrganizer !== 'all') activeChecks.push(matchesOrganizer)
+      if (selectedMode !== 'all') activeChecks.push(matchesMode)
+
+      if (activeChecks.length === 0) return true
+      return activeChecks.some(Boolean)
+    }
+
+    return matchesSearch && matchesCategory && matchesOrganizer && matchesMode
   })
+
+  const organizers = Array.from(
+    new Map(
+      events
+        .filter((e) => e.organizer_id)
+        .map((e) => [e.organizer_id, { id: e.organizer_id, full_name: e.organizer?.full_name || null }])
+    ).values()
+  ).sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || ''), 'ro'))
 
   return (
     <div className="min-h-screen bg-background">
@@ -85,7 +112,7 @@ export default function PublicEventsPage() {
       <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50">
         <div className="container flex h-16 items-center justify-between">
           <Link href="/" className="flex items-center gap-2">
-            <Calendar className="h-6 w-6 text-primary" />
+            <img src="/usvlogo.png" alt="USV" className="h-6 w-6" />
             <span className="text-xl font-bold">USV Events</span>
           </Link>
           <nav className="flex items-center gap-4">
@@ -118,6 +145,17 @@ export default function PublicEventsPage() {
               className="pl-9"
             />
           </div>
+
+          <Select value={operator} onValueChange={(v) => setOperator(v as 'and' | 'or')}>
+            <SelectTrigger className="w-full sm:w-[120px]">
+              <SelectValue placeholder="AND" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="and">AND</SelectItem>
+              <SelectItem value="or">OR</SelectItem>
+            </SelectContent>
+          </Select>
+
           <Select value={selectedCategory} onValueChange={setSelectedCategory}>
             <SelectTrigger className="w-full sm:w-[200px]">
               <SelectValue placeholder="Toate categoriile" />
@@ -129,6 +167,32 @@ export default function PublicEventsPage() {
                   {cat.name}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={selectedOrganizer} onValueChange={setSelectedOrganizer}>
+            <SelectTrigger className="w-full sm:w-[220px]">
+              <SelectValue placeholder="Toti organizatorii" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toti organizatorii</SelectItem>
+              {organizers.map((o) => (
+                <SelectItem key={o.id} value={o.id}>
+                  {o.full_name || o.id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={selectedMode} onValueChange={setSelectedMode}>
+            <SelectTrigger className="w-full sm:w-[200px]">
+              <SelectValue placeholder="Participare" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toate</SelectItem>
+              <SelectItem value="in_person">Fizic</SelectItem>
+              <SelectItem value="online">Online</SelectItem>
+              <SelectItem value="hybrid">Hibrid</SelectItem>
             </SelectContent>
           </Select>
         </div>

@@ -35,8 +35,8 @@ interface ProfileFormProps {
 
 export function ProfileForm({ profile }: ProfileFormProps) {
   const [fullName, setFullName] = useState(profile.full_name || '')
-  const [faculty, setFaculty] = useState(profile.faculty || '')
-  const [yearOfStudy, setYearOfStudy] = useState(profile.year_of_study?.toString() || '')
+  const [faculty, setFaculty] = useState<string | undefined>(profile.faculty ?? undefined)
+  const [yearOfStudy, setYearOfStudy] = useState<string | undefined>(profile.year_of_study?.toString() ?? undefined)
   const [phone, setPhone] = useState(profile.phone || '')
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
@@ -55,7 +55,7 @@ export function ProfileForm({ profile }: ProfileFormProps) {
         .from('profiles')
         .update({
           full_name: fullName,
-          faculty: faculty || null,
+          faculty: faculty ?? null,
           year_of_study: yearOfStudy ? parseInt(yearOfStudy) : null,
           phone: phone || null,
           updated_at: new Date().toISOString(),
@@ -103,12 +103,15 @@ export function ProfileForm({ profile }: ProfileFormProps) {
 
       <div className="grid gap-2">
         <Label htmlFor="faculty">Facultate</Label>
-        <Select value={faculty} onValueChange={setFaculty}>
+        <Select
+          value={faculty}
+          onValueChange={(v) => setFaculty(v === '__none__' ? undefined : v)}
+        >
           <SelectTrigger>
             <SelectValue placeholder="Selecteaza facultatea" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">Nicio selectie</SelectItem>
+            <SelectItem value="__none__">Nicio selectie</SelectItem>
             {FACULTIES.map((f) => (
               <SelectItem key={f} value={f}>
                 {f}
@@ -120,12 +123,15 @@ export function ProfileForm({ profile }: ProfileFormProps) {
 
       <div className="grid gap-2">
         <Label htmlFor="yearOfStudy">Anul de studiu</Label>
-        <Select value={yearOfStudy} onValueChange={setYearOfStudy}>
+        <Select
+          value={yearOfStudy}
+          onValueChange={(v) => setYearOfStudy(v === '__none__' ? undefined : v)}
+        >
           <SelectTrigger>
             <SelectValue placeholder="Selecteaza anul" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">Nicio selectie</SelectItem>
+            <SelectItem value="__none__">Nicio selectie</SelectItem>
             {[1, 2, 3, 4, 5, 6].map((year) => (
               <SelectItem key={year} value={year.toString()}>
                 Anul {year}

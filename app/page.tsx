@@ -64,7 +64,7 @@ export default function HomePage() {
       <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50">
         <div className="container flex h-16 items-center justify-between">
           <div className="flex items-center gap-2">
-            <Calendar className="h-6 w-6 text-primary" />
+            <img src="/usvlogo.png" alt="USV" className="h-6 w-6" />
             <span className="text-xl font-bold">USV Events</span>
           </div>
           <nav className="hidden md:flex items-center gap-6">
@@ -225,7 +225,7 @@ export default function HomePage() {
           <div className="grid md:grid-cols-4 gap-8">
             <div>
               <div className="flex items-center gap-2 mb-4">
-                <Calendar className="h-6 w-6 text-primary" />
+                <img src="/usvlogo.png" alt="USV" className="h-6 w-6" />
                 <span className="text-xl font-bold">USV Events</span>
               </div>
               <p className="text-sm text-muted-foreground">

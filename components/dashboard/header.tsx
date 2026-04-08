@@ -14,7 +14,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 import type { Profile } from '@/lib/types'
-import { LogOut, Menu, User, Settings, Calendar } from 'lucide-react'
+import { LogOut, Menu, User, Settings } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
@@ -67,7 +67,7 @@ export function DashboardHeader({ profile }: DashboardHeaderProps) {
           </SheetTrigger>
           <SheetContent side="left" className="w-64 p-0">
             <div className="flex h-16 items-center gap-2 border-b px-6">
-              <Calendar className="h-6 w-6 text-primary" />
+              <img src="/usvlogo.png" alt="USV" className="h-6 w-6" />
               <span className="text-lg font-bold">USV Events</span>
             </div>
             <nav className="p-4">

@@ -63,7 +63,7 @@ export function DashboardSidebar({ profile }: DashboardSidebarProps) {
   return (
     <aside className="hidden lg:flex w-64 flex-col border-r bg-background">
       <div className="flex h-16 items-center gap-2 border-b px-6">
-        <Calendar className="h-6 w-6 text-primary" />
+        <img src="/usvlogo.png" alt="USV" className="h-6 w-6" />
         <span className="text-lg font-bold">USV Events</span>
       </div>
       <nav className="flex-1 p-4">

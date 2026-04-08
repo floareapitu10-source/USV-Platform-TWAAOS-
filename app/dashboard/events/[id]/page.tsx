@@ -5,8 +5,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { RegisterButton } from '@/components/events/register-button'
+import { EventFeedbackForm } from '@/components/events/event-feedback-form'
 import type { Event, Category, Profile } from '@/lib/types'
-import { Calendar, Clock, MapPin, Users, User, ExternalLink, ArrowLeft } from 'lucide-react'
+import { Calendar, Clock, MapPin, Users, User, ExternalLink, ArrowLeft, Download, QrCode } from 'lucide-react'
 import { format } from 'date-fns'
 import { ro } from 'date-fns/locale'
 import Link from 'next/link'
@@ -46,25 +47,56 @@ export default async function EventPage({ params }: EventPageProps) {
     .eq('status', 'registered')
 
   // Check if user is registered
-  let isRegistered = false
+  let isParticipant = false
   if (user) {
     const { data: registration } = await supabase
       .from('event_registrations')
-      .select('id')
+      .select('id, status')
       .eq('event_id', id)
       .eq('user_id', user.id)
-      .eq('status', 'registered')
-      .single()
-    isRegistered = !!registration
+      .in('status', ['registered', 'attended'])
+      .maybeSingle()
+    isParticipant = !!registration
   }
 
   const startDate = parseSupabaseDate(typedEvent.start_date)
   const endDate = typedEvent.end_date ? parseSupabaseDate(typedEvent.end_date) : null
-  const isPast = startDate < new Date()
+  const endedAt = endDate || startDate
+  const isPast = endedAt < new Date()
   const isFull = typedEvent.max_participants ? (registrationCount || 0) >= typedEvent.max_participants : false
   const deadlinePassed = typedEvent.registration_deadline 
     ? parseSupabaseDate(typedEvent.registration_deadline) < new Date() 
     : false
+
+  // Feedback eligibility: participant + after event end
+  const now = new Date()
+  const canLeaveFeedback = !!user && isParticipant && now >= endedAt
+
+  let existingRating: number | null = null
+  let existingComment: string | null = null
+  if (user) {
+    const { data: existingFeedback } = await supabase
+      .from('event_feedback')
+      .select('rating, comment')
+      .eq('event_id', id)
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (existingFeedback) {
+      existingRating = existingFeedback.rating ?? null
+      existingComment = existingFeedback.comment ?? null
+    }
+  }
+
+  const { data: allRatings } = await supabase
+    .from('event_feedback')
+    .select('rating')
+    .eq('event_id', id)
+
+  const feedbackCount = allRatings?.length ?? 0
+  const averageRating = feedbackCount > 0
+    ? (allRatings || []).reduce((sum, r) => sum + (r.rating || 0), 0) / feedbackCount
+    : null
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -96,13 +128,27 @@ export default async function EventPage({ params }: EventPageProps) {
             </Badge>
           )}
           <h1 className="text-3xl font-bold">{typedEvent.title}</h1>
-          {typedEvent.organizer && (
+          {typedEvent.is_scraped ? (
+            <p className="text-muted-foreground">
+              {typedEvent.organizer_name
+                ? `Organizat de ${typedEvent.organizer_name}`
+                : typedEvent.source_name
+                ? `Sursa: ${typedEvent.source_name}`
+                : null}
+            </p>
+          ) : typedEvent.organizer ? (
             <p className="text-muted-foreground">
               Organizat de {typedEvent.organizer.full_name}
             </p>
-          )}
+          ) : null}
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" asChild>
+            <a href={`/api/events/${typedEvent.id}/ics`}>
+              <Download className="mr-2 h-4 w-4" />
+              .ics
+            </a>
+          </Button>
           {isPast ? (
             <Badge variant="secondary">Eveniment incheiat</Badge>
           ) : isFull ? (
@@ -143,6 +189,21 @@ export default async function EventPage({ params }: EventPageProps) {
         </div>
 
         <div className="space-y-4">
+          {!isPast && user && (
+            <RegisterButton
+              eventId={typedEvent.id}
+              isRegistered={isParticipant}
+              isFull={isFull}
+              deadlinePassed={deadlinePassed}
+            />
+          )}
+
+          {typedEvent.registration_deadline && !isPast && (
+            <p className="text-sm text-muted-foreground text-center">
+              Inscrieri pana la {format(parseSupabaseDate(typedEvent.registration_deadline), 'd MMMM yyyy, HH:mm', { locale: ro })}
+            </p>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle>Detalii eveniment</CardTitle>
@@ -198,11 +259,17 @@ export default async function EventPage({ params }: EventPageProps) {
                 </div>
               )}
 
-              {typedEvent.organizer && (
+              {(typedEvent.is_scraped
+                ? (typedEvent.organizer_name || typedEvent.source_name)
+                : typedEvent.organizer?.full_name) && (
                 <div className="flex items-start gap-3">
                   <User className="h-5 w-5 text-muted-foreground mt-0.5" />
                   <div>
-                    <p className="font-medium">{typedEvent.organizer.full_name}</p>
+                    <p className="font-medium">
+                      {typedEvent.is_scraped
+                        ? typedEvent.organizer_name || typedEvent.source_name
+                        : typedEvent.organizer?.full_name}
+                    </p>
                     <p className="text-sm text-muted-foreground">Organizator</p>
                   </div>
                 </div>
@@ -223,20 +290,41 @@ export default async function EventPage({ params }: EventPageProps) {
             </CardContent>
           </Card>
 
-          {!isPast && user && (
-            <RegisterButton
-              eventId={typedEvent.id}
-              isRegistered={isRegistered}
-              isFull={isFull}
-              deadlinePassed={deadlinePassed}
-            />
-          )}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <QrCode className="h-5 w-5" />
+                Cod QR
+              </CardTitle>
+              <CardDescription>
+                Scaneaza pentru a deschide link-ul evenimentului
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-center">
+                <img
+                  src={`/api/events/${typedEvent.id}/qr?size=256`}
+                  alt="Cod QR"
+                  className="h-56 w-56"
+                />
+              </div>
+              <Button variant="outline" className="w-full" asChild>
+                <a href={`/api/events/${typedEvent.id}/qr?size=512`} target="_blank" rel="noopener noreferrer">
+                  <Download className="mr-2 h-4 w-4" />
+                  Descarca QR
+                </a>
+              </Button>
+            </CardContent>
+          </Card>
 
-          {typedEvent.registration_deadline && !isPast && (
-            <p className="text-sm text-muted-foreground text-center">
-              Inscrieri pana la {format(parseSupabaseDate(typedEvent.registration_deadline), 'd MMMM yyyy, HH:mm', { locale: ro })}
-            </p>
-          )}
+          <EventFeedbackForm
+            eventId={typedEvent.id}
+            canLeaveFeedback={canLeaveFeedback && existingRating == null}
+            existingRating={existingRating}
+            existingComment={existingComment}
+            averageRating={averageRating}
+            feedbackCount={feedbackCount}
+          />
         </div>
       </div>
     </div>

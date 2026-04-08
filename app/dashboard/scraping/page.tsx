@@ -54,7 +54,25 @@ export default function ScrapingPage() {
     setLoading(false)
   }
 
+  async function fetchDataSilent() {
+    const [sourcesRes, logsRes] = await Promise.all([
+      supabase.from("scraped_sources").select("*").order("created_at", { ascending: false }),
+      supabase.from("scrape_logs").select("*, scraped_sources(name)").order("created_at", { ascending: false }).limit(20)
+    ])
+
+    if (sourcesRes.data) setSources(sourcesRes.data)
+    if (logsRes.data) setLogs(logsRes.data)
+  }
+
+  async function pollLogs(attempts = 6, intervalMs = 2000) {
+    for (let i = 0; i < attempts; i++) {
+      await new Promise((r) => setTimeout(r, intervalMs))
+      await fetchDataSilent()
+    }
+  }
+
   async function handleScrape(sourceId: string) {
+    if (scraping !== null) return
     setScraping(sourceId)
     setErrorMessage(null)
     try {
@@ -63,6 +81,12 @@ export default function ScrapingPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source_id: sourceId })
       })
+
+      if (response.status === 409) {
+        setErrorMessage('Scraping deja rulează. Se actualizează automat...')
+        await pollLogs()
+        return
+      }
       
       if (!response.ok) {
         const text = await response.text()
@@ -72,6 +96,7 @@ export default function ScrapingPage() {
       }
       
       await fetchData()
+      await pollLogs(3, 1500)
     } catch (error) {
       console.error("Scraping error:", error)
     } finally {
@@ -80,6 +105,7 @@ export default function ScrapingPage() {
   }
 
   async function handleScrapeAll() {
+    if (scraping !== null) return
     setScraping("all")
     setErrorMessage(null)
     try {
@@ -88,6 +114,12 @@ export default function ScrapingPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scrape_all: true })
       })
+
+      if (response.status === 409) {
+        setErrorMessage('Scraping deja rulează. Se actualizează automat...')
+        await pollLogs()
+        return
+      }
       
       if (!response.ok) {
         const text = await response.text()
@@ -97,6 +129,7 @@ export default function ScrapingPage() {
       }
       
       await fetchData()
+      await pollLogs(4, 2000)
     } catch (error) {
       console.error("Scraping error:", error)
     } finally {

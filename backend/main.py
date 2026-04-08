@@ -3,6 +3,7 @@ import json
 import asyncio
 import traceback
 import hashlib
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Header
@@ -48,6 +49,19 @@ app.add_middleware(
 supabase: Optional[AsyncClient] = None
 
 _ai_debug: contextvars.ContextVar[str] = contextvars.ContextVar("ai_debug", default="")
+
+# In-process concurrency guards to avoid duplicate scrapes from double-clicks
+# or overlapping scrape_all + per-source calls.
+_scrape_all_lock = asyncio.Lock()
+_scrape_source_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_source_lock(source_id: str) -> asyncio.Lock:
+    lock = _scrape_source_locks.get(source_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _scrape_source_locks[source_id] = lock
+    return lock
 
 
 def _extract_json_array(text: str) -> Optional[str]:
@@ -296,6 +310,7 @@ class ScrapedEvent(BaseModel):
     end_date: Optional[str] = None
     external_url: Optional[str] = None
     category: Optional[str] = None
+    organizer_name: Optional[str] = None
 
 
 @app.get("/health")
@@ -338,25 +353,61 @@ async def scrape_events(
 
         results = []
 
-        for source in sources:
-            try:
-                scrape_result = await scrape_source(client, source)
-                results.append(scrape_result)
-            except Exception as e:
-                # Log failed scrape
-                await client.table("scrape_logs").insert({
-                    "source_id": source["id"],
-                    "status": "failed",
-                    "events_found": 0,
-                    "events_added": 0,
-                    "error_message": str(e)
-                }).execute()
-                results.append({
-                    "source_id": source["id"],
-                    "source_name": source["name"],
-                    "status": "failed",
-                    "error": str(e)
-                })
+        # Acquire appropriate lock(s) to avoid overlapping scrapes.
+        acquired_all = False
+        acquired_source_locks: List[asyncio.Lock] = []
+        try:
+            if request.scrape_all:
+                if _scrape_all_lock.locked():
+                    raise HTTPException(status_code=409, detail="Scrape already running")
+                await _scrape_all_lock.acquire()
+                acquired_all = True
+
+            # For both scrape_all and single source, lock per-source too.
+            for s in sources:
+                lock = _get_source_lock(str(s["id"]))
+                if lock.locked():
+                    raise HTTPException(status_code=409, detail=f"Scrape already running for source {s['id']}")
+                await lock.acquire()
+                acquired_source_locks.append(lock)
+
+            # Run scrapes concurrently to reduce end-to-end scrape_all latency,
+            # but keep a small concurrency limit to avoid overloading external APIs.
+            semaphore = asyncio.Semaphore(2)
+
+            async def _run_one(source: dict) -> dict:
+                async with semaphore:
+                    try:
+                        return await scrape_source(client, source)
+                    except Exception as e:
+                        # Log failed scrape
+                        await client.table("scrape_logs").insert({
+                            "source_id": source["id"],
+                            "status": "failed",
+                            "events_found": 0,
+                            "events_added": 0,
+                            "error_message": str(e)
+                        }).execute()
+                        return {
+                            "source_id": source["id"],
+                            "source_name": source["name"],
+                            "status": "failed",
+                            "error": str(e)
+                        }
+
+            tasks = [asyncio.create_task(_run_one(source)) for source in sources]
+            results = await asyncio.gather(*tasks)
+        finally:
+            for lock in acquired_source_locks:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+            if acquired_all:
+                try:
+                    _scrape_all_lock.release()
+                except Exception:
+                    pass
 
         return {"results": results}
     except HTTPException:
@@ -374,11 +425,10 @@ async def scrape_events(
 
 
 async def scrape_source(client: AsyncClient, source: dict) -> dict:
-    """Scrape a single source and extract events using AI"""
-    
-    url = source["url"]
+    started = time.perf_counter()
     source_id = source["id"]
-    source_name = source["name"]
+    url = source["url"]
+    source_name = source.get("name") or "Unknown"
     scrape_selector = source.get("scrape_selector")
     if isinstance(scrape_selector, str):
         scrape_selector = " ".join(scrape_selector.split())
@@ -390,7 +440,8 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
             response = await http_client.get(url, follow_redirects=True)
             response.raise_for_status()
         except Exception as e:
-            raise Exception(f"Failed to fetch {url}: {str(e)}")
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            raise Exception(f"Failed to fetch {url}: {str(e)} (duration_ms={duration_ms})")
     
     # Parse HTML
     soup = BeautifulSoup(response.text, "html.parser")
@@ -417,13 +468,19 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
     
     # Use OpenAI to extract events
     _ai_debug.set("")
+    content_chars = 0
+    try:
+        content_chars = len(text_content or "")
+    except Exception:
+        content_chars = 0
+
     events = await extract_events_with_ai(text_content, url, source_name)
 
     detail_links: list[str] = []
     detail_limit = 6
     try:
         if "usv.ro" in str(url).lower():
-            detail_limit = 20
+            detail_limit = 10
     except Exception:
         detail_limit = 6
 
@@ -480,8 +537,8 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
 
         # USV listing pagination: collect links from additional pages too.
         if is_usv_listing and len(detail_links) < detail_limit:
-            async with httpx.AsyncClient(timeout=60.0) as list_client:
-                for page in range(2, 7):
+            async with httpx.AsyncClient(timeout=20.0) as list_client:
+                for page in range(2, 5):
                     try:
                         page_url = str(httpx.URL(url).copy_set_param("paged", str(page)))
                         r2 = await list_client.get(page_url, follow_redirects=True)
@@ -511,17 +568,28 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
                     break
 
         detail_texts: list[str] = []
-        async with httpx.AsyncClient(timeout=60.0) as detail_client:
-            for link in detail_links[:detail_limit]:
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def _fetch_detail(link: str) -> Optional[str]:
+            async with semaphore:
                 try:
-                    r = await detail_client.get(link, follow_redirects=True)
-                    r.raise_for_status()
-                    s = BeautifulSoup(r.text, "html.parser")
-                    for tag in s(["script", "style", "nav", "footer", "header"]):
-                        tag.decompose()
-                    detail_texts.append(s.get_text(separator="\n", strip=True))
+                    async with httpx.AsyncClient(timeout=20.0) as detail_client:
+                        r = await detail_client.get(link, follow_redirects=True)
+                        r.raise_for_status()
+                        s = BeautifulSoup(r.text, "html.parser")
+                        for tag in s(["script", "style", "nav", "footer", "header"]):
+                            tag.decompose()
+                        return s.get_text(separator="\n", strip=True)
                 except Exception as e:
                     print(f"Failed to fetch detail page {link}: {e}")
+                    return None
+
+        tasks = [asyncio.create_task(_fetch_detail(link)) for link in detail_links[:detail_limit]]
+        fetched = await asyncio.gather(*tasks)
+        for t in fetched:
+            if t:
+                detail_texts.append(t)
 
         if detail_texts:
             # Extract per-detail-page to keep URLs and context correct.
@@ -602,6 +670,15 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
     events_updated = 0
     for event in events:
         try:
+            # Organizer name from AI or fallback to the source label.
+            organizer_name_value = None
+            try:
+                organizer_name_value = (event.get("organizer_name") or "").strip() if event.get("organizer_name") is not None else None
+            except Exception:
+                organizer_name_value = None
+            if not organizer_name_value:
+                organizer_name_value = source_name
+
             # Map category
             category_id = None
             if event.get("category"):
@@ -633,6 +710,8 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
                     "end_date": event.get("end_date"),
                     "external_url": external_url_value if external_url_value and str(external_url_value).strip() != str(url).strip() else None,
                     "source_url": source_url_value,
+                    "source_name": source_name,
+                    "organizer_name": organizer_name_value,
                     "category_id": category_id,
                     "organizer_id": organizer_id,
                     "is_public": True,
@@ -653,6 +732,8 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
                     "end_date": event.get("end_date"),
                     "external_url": external_url_value if external_url_value and str(external_url_value).strip() != str(url).strip() else None,
                     "source_url": source_url_value,
+                    "source_name": source_name,
+                    "organizer_name": organizer_name_value,
                     "category_id": category_id,
                     "organizer_id": organizer_id,
                     "is_public": True,
@@ -674,6 +755,8 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
                 "is_public": True,
                 "is_scraped": True,
                 "source_url": source_url_value,
+                "source_name": source_name,
+                "organizer_name": organizer_name_value,
                 "external_url": external_url_value if external_url_value and str(external_url_value).strip() != str(url).strip() else None,
                 "status": "published"
             }).execute()
@@ -683,13 +766,26 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
             print(f"Error inserting event: {e}")
             continue
     
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    debug_bits: List[str] = []
+    try:
+        dbg = _ai_debug.get()
+        if dbg:
+            debug_bits.append(str(dbg))
+    except Exception:
+        pass
+    debug_bits.append(f"duration_ms={duration_ms}")
+    debug_bits.append(f"content_chars={content_chars}")
+    if events_updated:
+        debug_bits.append(f"updated={events_updated}")
+
     # Log success
     await client.table("scrape_logs").insert({
         "source_id": source_id,
         "status": "success",
         "events_found": len(events),
         "events_added": events_added,
-        "error_message": f"updated={events_updated}" if events_updated else None,
+        "error_message": "; ".join(debug_bits) if debug_bits else None,
     }).execute()
     
     # Update last scraped timestamp
@@ -703,20 +799,27 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
         "status": "success",
         "events_found": len(events),
         "events_added": events_added,
-        "events_updated": events_updated,
     }
 
 
 async def extract_events_with_ai(content: str, source_url: str, source_name: str) -> List[dict]:
     """Use OpenAI to extract structured event data from text content"""
 
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    
+    gemini_key = os.getenv("GEMINI_API_KEY")
+
+    # Keep prompts bounded: huge pages can drastically slow down Gemini and increase failure rate.
+    # This also helps keep scrape_all within a reasonable time budget.
+    try:
+        max_chars = 12000
+        content = content[:max_chars]
+    except Exception:
+        pass
+
     system_prompt = """You are an expert at extracting event information from web content.
 Extract all events you can find from the provided text. For each event, extract:
 - title: The name/title of the event
 - description: 2-4 sentences with concrete details from the text (what happens, who is it for, key highlights). Do NOT use generic filler.
+- organizer_name: The real organizer name if explicitly mentioned (e.g., USV, a faculty, a club, Primaria Suceava). If not stated, omit or leave empty.
 - location: Where the event takes place
 - start_date: The start date and time in ISO 8601 format. If the text says “ora 17:00”, keep that exact local time.
 - end_date: The end date and time in ISO 8601 format (if available)
@@ -769,6 +872,7 @@ Return only a JSON array of events."""
                         "properties": {
                             "title": {"type": "STRING"},
                             "description": {"type": "STRING"},
+                            "organizer_name": {"type": "STRING"},
                             "location": {"type": "STRING"},
                             "start_date": {"type": "STRING"},
                             "end_date": {"type": "STRING"},
@@ -782,15 +886,23 @@ Return only a JSON array of events."""
         }
 
         last_error: Optional[str] = None
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             for model in model_candidates:
                 url = f"{gemini_base}/{model}:generateContent"
                 try:
-                    r = await client.post(
-                        url,
-                        params={"key": gemini_key},
-                        json=payload,
-                    )
+                    # Small retry for transient upstream errors.
+                    r = None
+                    for delay in (0.0, 0.6, 1.5):
+                        if delay:
+                            await asyncio.sleep(delay)
+                        r = await client.post(
+                            url,
+                            params={"key": gemini_key},
+                            json=payload,
+                        )
+                        if r.status_code in (429, 500, 502, 503, 504):
+                            continue
+                        break
                     if r.status_code == 404:
                         last_error = f"404 Not Found for model {model}"  # try next
                         continue
@@ -841,23 +953,8 @@ Return only a JSON array of events."""
             result_text = await _gemini_generate(prompt)
             if not result_text:
                 return []
-        elif openai_key:
-            from openai import AsyncOpenAI
-
-            openai = AsyncOpenAI(api_key=openai_key)
-            response = await openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                max_tokens=4000,
-            )
-            result_text = response.choices[0].message.content.strip()
-            _ai_debug.set("openai_model=gpt-4o-mini")
         else:
-            print("No GEMINI_API_KEY or OPENAI_API_KEY configured")
+            print("No GEMINI_API_KEY configured")
             _ai_debug.set("no_ai_key")
             return []
         
@@ -873,7 +970,10 @@ Return only a JSON array of events."""
                     + result_text[:6000]
                 )
                 repaired = await _gemini_generate(repair_prompt)
-                events = _parse_events_from_text(repaired)
+                try:
+                    events = _parse_events_from_text(repaired)
+                except json.JSONDecodeError:
+                    return []
             else:
                 raise e
         
@@ -894,8 +994,24 @@ Return only a JSON array of events."""
                     pass
                 event["start_date"] = start_date
                 end_date = _normalize_iso_datetime(event.get("end_date"))
-                if end_date:
-                    event["end_date"] = end_date
+                event["end_date"] = end_date if end_date else None
+
+                # Normalize other optional fields so we don't insert empty strings into typed columns.
+                for k in ("description", "location", "external_url", "category"):
+                    v = event.get(k)
+                    if v is None:
+                        continue
+                    sv = str(v).strip()
+                    event[k] = sv if sv else None
+
+                # If the model didn't provide a per-event URL, fall back to the page we extracted from.
+                # This makes QR codes and "Link extern" usable, especially for detail-page extraction.
+                if not event.get("external_url"):
+                    try:
+                        su = str(source_url).strip()
+                        event["external_url"] = su if su.startswith("http") else None
+                    except Exception:
+                        event["external_url"] = None
                 valid_events.append(event)
 
         return valid_events

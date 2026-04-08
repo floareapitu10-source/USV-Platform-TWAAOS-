@@ -21,7 +21,6 @@ import {
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { Calendar } from 'lucide-react'
 
 const FACULTIES = [
   'Facultatea de Inginerie Electrica si Stiinta Calculatoarelor',
@@ -95,7 +94,7 @@ export default function SignUpPage() {
       <div className="w-full max-w-md">
         <div className="flex flex-col gap-6">
           <div className="flex items-center justify-center gap-2 text-primary">
-            <Calendar className="h-8 w-8" />
+            <img src="/usvlogo.png" alt="USV" className="h-8 w-8" />
             <span className="text-2xl font-bold">USV Events</span>
           </div>
           <Card>

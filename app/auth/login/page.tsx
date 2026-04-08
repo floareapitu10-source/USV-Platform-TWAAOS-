@@ -14,7 +14,6 @@ import { Label } from '@/components/ui/label'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { Calendar } from 'lucide-react'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -49,13 +48,13 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="flex flex-col gap-6">
           <div className="flex items-center justify-center gap-2 text-primary">
-            <Calendar className="h-8 w-8" />
+            <img src="/usvlogo.png" alt="USV" className="h-8 w-8" />
             <span className="text-2xl font-bold">USV Events</span>
           </div>
           <Card>
             <CardHeader>
-              <CardTitle className="text-2xl">Autentificare</CardTitle>
-              <CardDescription>
+              <CardTitle className="text-2xl text-center">Autentificare</CardTitle>
+              <CardDescription className='text-center'>
                 Introdu email-ul si parola pentru a te conecta
               </CardDescription>
             </CardHeader>

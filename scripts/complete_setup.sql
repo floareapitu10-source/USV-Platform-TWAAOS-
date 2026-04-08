@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS public.events (
   short_description TEXT,
   location TEXT,
   location_details TEXT,
+  participation_mode TEXT CHECK (participation_mode IN ('in_person', 'online', 'hybrid')),
   start_date TIMESTAMPTZ NOT NULL,
   end_date TIMESTAMPTZ,
   image_url TEXT,

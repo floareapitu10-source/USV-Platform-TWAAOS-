@@ -1,10 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { useRouter } from 'next/navigation'
 import { CheckCircle, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 
 interface RegisterButtonProps {
   eventId: string
@@ -19,37 +19,51 @@ export function RegisterButton({ eventId, isRegistered, isFull, deadlinePassed }
   const router = useRouter()
 
   const handleRegister = async () => {
-    const supabase = createClient()
     setLoading(true)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        router.push('/auth/login')
-        return
-      }
-
       if (registered) {
-        // Unregister
-        await supabase
-          .from('event_registrations')
-          .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-          .eq('event_id', eventId)
-          .eq('user_id', user.id)
+        const res = await fetch('/api/registrations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventId, action: 'unregister' }),
+        })
+
+        if (res.status === 401) {
+          router.push('/auth/login')
+          return
+        }
+
+        if (!res.ok) {
+          throw new Error('Failed to unregister')
+        }
         setRegistered(false)
       } else {
-        // Register
-        await supabase
-          .from('event_registrations')
-          .upsert({
-            event_id: eventId,
-            user_id: user.id,
-            status: 'registered',
-            cancelled_at: null,
-          }, {
-            onConflict: 'event_id,user_id',
-          })
+        const res = await fetch('/api/registrations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventId, action: 'register' }),
+        })
+
+        if (res.status === 401) {
+          router.push('/auth/login')
+          return
+        }
+
+        if (!res.ok) {
+          throw new Error('Failed to register')
+        }
         setRegistered(true)
+        toast('Inscriere confirmata', {
+          description: 'Te-ai inscris la eveniment',
+          action: {
+            label: 'Vezi',
+            onClick: () => {
+              window.location.href = '/dashboard/notifications'
+            },
+          },
+          duration: 6000,
+        })
       }
       router.refresh()
     } catch (error) {

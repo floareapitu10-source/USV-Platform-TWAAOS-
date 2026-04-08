@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
   organizer_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
   location TEXT,
   location_details TEXT,
+  participation_mode TEXT CHECK (participation_mode IN ('in_person', 'online', 'hybrid')),
   start_date TIMESTAMPTZ NOT NULL,
   end_date TIMESTAMPTZ,
   registration_deadline TIMESTAMPTZ,
