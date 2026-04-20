@@ -22,6 +22,7 @@ export function CategorySubscriptions({ categories, subscriptions, userId }: Cat
   const subscribedCategoryIds = subscriptions
     .filter(s => s.category)
     .map(s => s.category_id)
+    .filter((id): id is string => Boolean(id))
 
   const handleToggleSubscription = async (categoryId: string) => {
     const supabase = createClient()

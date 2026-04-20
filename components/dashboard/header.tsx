@@ -110,6 +110,9 @@ export function DashboardHeader({ profile }: DashboardHeaderProps) {
               <p className="text-xs leading-none text-muted-foreground">
                 {profile.email}
               </p>
+              <p className="text-xs leading-none text-primary font-medium">
+                {profile.role === 'admin' ? 'Administrator' : profile.role === 'organizer' ? 'Organizator' : 'Student'}
+              </p>
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />

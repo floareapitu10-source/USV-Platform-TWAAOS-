@@ -44,6 +44,7 @@ const adminLinks = [
   { href: '/dashboard/events', label: 'Evenimente', icon: Calendar },
   { href: '/dashboard/my-events', label: 'Evenimentele mele', icon: FolderOpen },
   { href: '/dashboard/calendar', label: 'Calendar', icon: CalendarPlus },
+  { href: '/dashboard/subscriptions', label: 'Abonamente', icon: Heart },
   { href: '/dashboard/users', label: 'Utilizatori', icon: Users },
   { href: '/dashboard/stats', label: 'Statistici', icon: BarChart3 },
   { href: '/dashboard/scraping', label: 'AI Scraping', icon: Globe },
@@ -61,12 +62,12 @@ export function DashboardSidebar({ profile }: DashboardSidebarProps) {
       : studentLinks
 
   return (
-    <aside className="hidden lg:flex w-64 flex-col border-r bg-background">
+    <aside className="hidden lg:flex w-64 flex-col border-r bg-background sticky top-0 h-svh">
       <div className="flex h-16 items-center gap-2 border-b px-6">
         <img src="/usvlogo.png" alt="USV" className="h-6 w-6" />
         <span className="text-lg font-bold">USV Events</span>
       </div>
-      <nav className="flex-1 p-4">
+      <nav className="flex-1 min-h-0 p-4 overflow-y-auto">
         <ul className="space-y-1">
           {links.map((link) => {
             const isActive = pathname === link.href || 
@@ -94,7 +95,9 @@ export function DashboardSidebar({ profile }: DashboardSidebarProps) {
         <div className="rounded-lg bg-muted p-3">
           <p className="text-xs text-muted-foreground">Conectat ca</p>
           <p className="text-sm font-medium truncate">{profile.full_name || profile.email}</p>
-          <p className="text-xs text-muted-foreground capitalize">{profile.role}</p>
+          <p className="text-xs text-primary font-medium">
+            {profile.role === 'admin' ? 'Administrator' : profile.role === 'organizer' ? 'Organizator' : 'Student'}
+          </p>
         </div>
       </div>
     </aside>

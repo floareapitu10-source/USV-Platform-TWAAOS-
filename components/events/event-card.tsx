@@ -1,21 +1,65 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { Event, Category, Profile } from '@/lib/types'
-import { Calendar, MapPin, Users, Clock } from 'lucide-react'
+import { Calendar, MapPin, Users, Clock, Trash2, Loader2 } from 'lucide-react'
 import Link from 'next/link'
 import { format } from 'date-fns'
 import { ro } from 'date-fns/locale'
 import { parseSupabaseDate } from '@/lib/utils'
+import { createClient } from '@/lib/supabase/client'
 
 interface EventCardProps {
   event: Event & { category?: Category | null; organizer?: Profile | null }
   showActions?: boolean
+  canDelete?: boolean
+  onDelete?: (eventId: string) => void | Promise<void>
 }
 
-export function EventCard({ event, showActions = true }: EventCardProps) {
+export function EventCard({ event, showActions = true, canDelete, onDelete }: EventCardProps) {
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [deleted, setDeleted] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  useEffect(() => {
+    if (canDelete !== undefined) return
+    const supabase = createClient()
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return
+      const { data } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+      if (data?.role === 'admin') setIsAdmin(true)
+    })
+  }, [canDelete])
+
+  const showDelete = canDelete ?? isAdmin
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm(`Sterge evenimentul "${event.title}"?`)) return
+    setDeleting(true)
+    try {
+      if (onDelete) {
+        await onDelete(event.id)
+      } else {
+        const supabase = createClient()
+        const { error } = await supabase.from('events').delete().eq('id', event.id)
+        if (error) {
+          alert(`Stergere esuata: ${error.message}`)
+          return
+        }
+      }
+      setDeleted(true)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  if (deleted) return null
+
   const startDate = parseSupabaseDate(event.start_date)
   const formattedDate = format(startDate, 'd MMMM yyyy', { locale: ro })
   const formattedTime = format(startDate, 'HH:mm', { locale: ro })
@@ -83,12 +127,27 @@ export function EventCard({ event, showActions = true }: EventCardProps) {
         </div>
       </CardContent>
       {showActions && (
-        <CardFooter className="pt-2">
-          <Button asChild className="w-full">
+        <CardFooter className="pt-2 gap-2">
+          <Button asChild className="flex-1">
             <Link href={`/dashboard/events/${event.id}`}>
               Vezi detalii
             </Link>
           </Button>
+          {showDelete && (
+            <Button
+              variant="outline"
+              size="icon"
+              disabled={deleting}
+              onClick={handleDelete}
+              aria-label="Sterge eveniment"
+            >
+              {deleting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 text-destructive" />
+              )}
+            </Button>
+          )}
         </CardFooter>
       )}
     </Card>

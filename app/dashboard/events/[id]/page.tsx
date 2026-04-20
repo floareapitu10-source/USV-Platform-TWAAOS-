@@ -166,7 +166,7 @@ export default async function EventPage({ params }: EventPageProps) {
               <CardTitle>Descriere</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="prose prose-sm max-w-none">
+              <div className="prose prose-sm max-w-none break-words whitespace-pre-wrap">
                 {typedEvent.description || typedEvent.short_description || 'Nicio descriere disponibila.'}
               </div>
             </CardContent>

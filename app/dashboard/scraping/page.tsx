@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -37,9 +37,65 @@ export default function ScrapingPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [newSource, setNewSource] = useState({ name: "", url: "" })
   const supabase = createClient()
+  const resumeControllerRef = useRef({ cancelled: false })
+
+  const SCRAPE_JOB_KEY = "usv.scrape_job"
+  const SCRAPE_JOB_TTL_MS = 15 * 60 * 1000
+
+  type ScrapeJob =
+    | { mode: "all"; startedAt: string }
+    | { mode: "single"; startedAt: string; sourceId: string }
+
+  function readScrapeJob(): ScrapeJob | null {
+    if (typeof window === "undefined") return null
+    try {
+      const raw = window.localStorage.getItem(SCRAPE_JOB_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as ScrapeJob
+      const startedAtMs = new Date((parsed as any).startedAt).getTime()
+      if (!Number.isFinite(startedAtMs)) return null
+      if (Date.now() - startedAtMs > SCRAPE_JOB_TTL_MS) {
+        window.localStorage.removeItem(SCRAPE_JOB_KEY)
+        return null
+      }
+      if ((parsed as any).mode === "single" && !(parsed as any).sourceId) return null
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  function writeScrapeJob(job: ScrapeJob) {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(SCRAPE_JOB_KEY, JSON.stringify(job))
+    } catch {
+      return
+    }
+  }
+
+  function clearScrapeJob() {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.removeItem(SCRAPE_JOB_KEY)
+    } catch {
+      return
+    }
+  }
 
   useEffect(() => {
-    fetchData()
+    resumeControllerRef.current.cancelled = false
+    fetchData().then(async () => {
+      const job = readScrapeJob()
+      if (job) {
+        setErrorMessage('Scraping ruleaza. Se actualizeaza automat...')
+        setScraping(job.mode === "all" ? "all" : job.sourceId)
+        await resumeScrape(job)
+      }
+    })
+    return () => {
+      resumeControllerRef.current.cancelled = true
+    }
   }, [])
 
   async function fetchData() {
@@ -60,8 +116,13 @@ export default function ScrapingPage() {
       supabase.from("scrape_logs").select("*, scraped_sources(name)").order("created_at", { ascending: false }).limit(20)
     ])
 
+    const sourcesData = sourcesRes.data || []
+    const logsData = logsRes.data || []
+
     if (sourcesRes.data) setSources(sourcesRes.data)
     if (logsRes.data) setLogs(logsRes.data)
+
+    return { sourcesData, logsData }
   }
 
   async function pollLogs(attempts = 6, intervalMs = 2000) {
@@ -69,6 +130,58 @@ export default function ScrapingPage() {
       await new Promise((r) => setTimeout(r, intervalMs))
       await fetchDataSilent()
     }
+  }
+
+  async function resumeScrape(job: ScrapeJob) {
+    const startedAtMs = new Date(job.startedAt).getTime()
+    const maxEnd = startedAtMs + SCRAPE_JOB_TTL_MS
+    const IDLE_TIMEOUT_MS = 45 * 1000
+    const MIN_POLL_MS = 20 * 1000
+    let lastNewLogAt = Date.now()
+    let lastSeenNewestLogMs = 0
+    const pollStartedAt = Date.now()
+
+    while (!resumeControllerRef.current.cancelled && Date.now() < maxEnd) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const { sourcesData, logsData } = await fetchDataSilent()
+      const relevant = (logsData || []).filter((l: any) => {
+        const t = new Date(l.created_at).getTime()
+        return Number.isFinite(t) && t >= startedAtMs
+      })
+
+      const newestLogMs = (logsData || []).reduce((acc: number, l: any) => {
+        const t = new Date(l.created_at).getTime()
+        return Number.isFinite(t) && t > acc ? t : acc
+      }, 0)
+      if (newestLogMs > lastSeenNewestLogMs) {
+        lastSeenNewestLogMs = newestLogMs
+        lastNewLogAt = Date.now()
+      }
+
+      const isDone = (() => {
+        if (job.mode === "single") {
+          return relevant.some((l: any) => l.source_id === job.sourceId)
+        }
+        const activeIds = (sourcesData || []).filter((s: any) => s.is_active).map((s: any) => s.id)
+        if (!activeIds.length) return true
+        return activeIds.every((id: string) => relevant.some((l: any) => l.source_id === id))
+      })()
+
+      const idleForMs = Date.now() - lastNewLogAt
+      const pollAgeMs = Date.now() - pollStartedAt
+      const isIdleDone = pollAgeMs >= MIN_POLL_MS && idleForMs >= IDLE_TIMEOUT_MS
+
+      if (isDone || isIdleDone) {
+        clearScrapeJob()
+        setErrorMessage(null)
+        setScraping(null)
+        return
+      }
+    }
+
+    clearScrapeJob()
+    setScraping(null)
+    setErrorMessage(null)
   }
 
   async function handleScrape(sourceId: string) {

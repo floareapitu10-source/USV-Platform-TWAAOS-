@@ -92,6 +92,18 @@ def _extract_json_array(text: str) -> Optional[str]:
     return None
 
 
+def _clean_description(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    # Some model outputs end with ellipses which looks like UI truncation.
+    if v.endswith("..."):
+        v = v[:-3].rstrip()
+    return v or None
+
+
 def _get_bearer_token(authorization: Optional[str]) -> Optional[str]:
     if not authorization:
         return None
@@ -364,12 +376,40 @@ async def scrape_events(
                 acquired_all = True
 
             # For both scrape_all and single source, lock per-source too.
+            # If a per-source lock is already held (previous scrape still running),
+            # skip that source instead of aborting the whole batch. This ensures
+            # newly added sources (and other idle ones) still get scraped.
+            skipped_busy: list[dict] = []
+            runnable_sources: list[dict] = []
             for s in sources:
                 lock = _get_source_lock(str(s["id"]))
                 if lock.locked():
-                    raise HTTPException(status_code=409, detail=f"Scrape already running for source {s['id']}")
+                    if not request.scrape_all and request.source_id:
+                        # Explicit single-source request: surface the conflict clearly.
+                        raise HTTPException(status_code=409, detail=f"Scrape already running for source {s['id']}")
+                    skipped_busy.append(s)
+                    continue
                 await lock.acquire()
                 acquired_source_locks.append(lock)
+                runnable_sources.append(s)
+
+            # Log skipped sources so the UI history shows they were not processed
+            # this round (instead of silently dropping them).
+            for s in skipped_busy:
+                try:
+                    await client.table("scrape_logs").insert({
+                        "source_id": s["id"],
+                        "status": "failed",
+                        "events_found": 0,
+                        "events_added": 0,
+                        "error_message": "Skipped: a previous scrape for this source is still running",
+                    }).execute()
+                except Exception:
+                    pass
+
+            if not runnable_sources:
+                # Nothing new can run: every requested source is busy.
+                raise HTTPException(status_code=409, detail="Scrape already running for all requested sources")
 
             # Run scrapes concurrently to reduce end-to-end scrape_all latency,
             # but keep a small concurrency limit to avoid overloading external APIs.
@@ -378,34 +418,56 @@ async def scrape_events(
             async def _run_one(source: dict) -> dict:
                 async with semaphore:
                     try:
-                        return await scrape_source(client, source)
-                    except Exception as e:
-                        # Log failed scrape
+                        # Apply max timeout per source to prevent indefinite hangs
+                        return await asyncio.wait_for(
+                            scrape_source(client, source),
+                            timeout=240.0
+                        )
+                    except asyncio.TimeoutError:
+                        error_msg = f"Scraping timed out after 240s"
                         await client.table("scrape_logs").insert({
                             "source_id": source["id"],
                             "status": "failed",
                             "events_found": 0,
                             "events_added": 0,
-                            "error_message": str(e)
+                            "error_message": error_msg
                         }).execute()
                         return {
                             "source_id": source["id"],
                             "source_name": source["name"],
                             "status": "failed",
-                            "error": str(e)
+                            "error": error_msg
+                        }
+                    except Exception as e:
+                        error_msg = f"{type(e).__name__}: {str(e)}"
+                        await client.table("scrape_logs").insert({
+                            "source_id": source["id"],
+                            "status": "failed",
+                            "events_found": 0,
+                            "events_added": 0,
+                            "error_message": error_msg
+                        }).execute()
+                        return {
+                            "source_id": source["id"],
+                            "source_name": source["name"],
+                            "status": "failed",
+                            "error": error_msg
                         }
 
-            tasks = [asyncio.create_task(_run_one(source)) for source in sources]
+            tasks = [asyncio.create_task(_run_one(source)) for source in runnable_sources]
             results = await asyncio.gather(*tasks)
         finally:
+            # Always release locks, even if exception or timeout
             for lock in acquired_source_locks:
                 try:
-                    lock.release()
+                    if lock.locked():
+                        lock.release()
                 except Exception:
                     pass
             if acquired_all:
                 try:
-                    _scrape_all_lock.release()
+                    if _scrape_all_lock.locked():
+                        _scrape_all_lock.release()
                 except Exception:
                     pass
 
@@ -434,8 +496,20 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
         scrape_selector = " ".join(scrape_selector.split())
         scrape_selector = re.sub(r"([.#])\s+", r"\1", scrape_selector)
     
+    default_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
     # Fetch the webpage
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
+    async with httpx.AsyncClient(timeout=60.0, headers=default_headers) as http_client:
         try:
             response = await http_client.get(url, follow_redirects=True)
             response.raise_for_status()
@@ -477,12 +551,12 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
     events = await extract_events_with_ai(text_content, url, source_name)
 
     detail_links: list[str] = []
-    detail_limit = 6
+    detail_limit = 4
     try:
         if "usv.ro" in str(url).lower():
-            detail_limit = 10
+            detail_limit = 6
     except Exception:
-        detail_limit = 6
+        detail_limit = 4
 
     is_usv_listing = False
     try:
@@ -493,7 +567,9 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
         is_usv_listing = False
     # If very few events found on a listing page, follow item links (detail pages) and try again.
     # Some sources show multiple items but the AI only reliably extracts from detail pages.
-    if (not events or len(events) < 2) and selected:
+    if (not events or len(events) < 2):
+        blocks_to_scan = selected if selected else [soup]
+
         def _add_link(href: str):
             href = str(href).strip()
             if not href or href.startswith("#") or href.startswith("javascript:"):
@@ -524,7 +600,7 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
                 if len(detail_links) >= detail_limit:
                     return
 
-        for el in selected:
+        for el in blocks_to_scan:
             # Prefer common "read more" patterns first (USV uses a.learn_more)
             preferred_anchors = el.select("a.learn_more[href], h2 a[href]")
             anchors = preferred_anchors if preferred_anchors else el.select("a[href]")
@@ -537,7 +613,7 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
 
         # USV listing pagination: collect links from additional pages too.
         if is_usv_listing and len(detail_links) < detail_limit:
-            async with httpx.AsyncClient(timeout=20.0) as list_client:
+            async with httpx.AsyncClient(timeout=20.0, headers=default_headers) as list_client:
                 for page in range(2, 5):
                     try:
                         page_url = str(httpx.URL(url).copy_set_param("paged", str(page)))
@@ -574,7 +650,7 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
         async def _fetch_detail(link: str) -> Optional[str]:
             async with semaphore:
                 try:
-                    async with httpx.AsyncClient(timeout=20.0) as detail_client:
+                    async with httpx.AsyncClient(timeout=20.0, headers=default_headers) as detail_client:
                         r = await detail_client.get(link, follow_redirects=True)
                         r.raise_for_status()
                         s = BeautifulSoup(r.text, "html.parser")
@@ -592,19 +668,32 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
                 detail_texts.append(t)
 
         if detail_texts:
-            # Extract per-detail-page to keep URLs and context correct.
-            extracted_events: list[dict] = []
+            # Extract per-detail-page in parallel to keep end-to-end time within the
+            # per-source timeout budget. Sequential extraction easily exceeds 240s
+            # when there are 4+ detail pages and the AI is slow.
             _ai_debug.set("")
-            for idx, link in enumerate(detail_links[: min(detail_limit, len(detail_texts))]):
-                try:
-                    page_text = detail_texts[idx]
-                    if len(page_text) > max_chars:
-                        page_text = page_text[:max_chars]
-                    page_events = await extract_events_with_ai(page_text, link, source_name)
-                    if page_events:
-                        extracted_events.extend(page_events)
-                except Exception as e:
-                    print(f"Failed to extract events from detail page {link}: {e}")
+            ai_sem = asyncio.Semaphore(3)
+
+            async def _extract_one(idx: int, link: str) -> list[dict]:
+                async with ai_sem:
+                    try:
+                        page_text = detail_texts[idx]
+                        if len(page_text) > max_chars:
+                            page_text = page_text[:max_chars]
+                        return await extract_events_with_ai(page_text, link, source_name) or []
+                    except Exception as e:
+                        print(f"Failed to extract events from detail page {link}: {e}")
+                        return []
+
+            extract_tasks = [
+                asyncio.create_task(_extract_one(idx, link))
+                for idx, link in enumerate(detail_links[: min(detail_limit, len(detail_texts))])
+            ]
+            extract_results = await asyncio.gather(*extract_tasks, return_exceptions=False)
+            extracted_events: list[dict] = []
+            for page_events in extract_results:
+                if page_events:
+                    extracted_events.extend(page_events)
 
             # Fallback: if per-page extraction yields nothing, try combined
             if not extracted_events:
@@ -704,7 +793,7 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
             if existing_by_url.data:
                 await client.table("events").update({
                     "title": event["title"],
-                    "description": event.get("description"),
+                    "description": _clean_description(event.get("description")),
                     "location": event.get("location", "Suceava"),
                     "start_date": event["start_date"],
                     "end_date": event.get("end_date"),
@@ -727,7 +816,7 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
             if existing.data:
                 # If we found the same event again, update it (helps fix old wrong data and migrate URLs)
                 await client.table("events").update({
-                    "description": event.get("description"),
+                    "description": _clean_description(event.get("description")),
                     "location": event.get("location", "Suceava"),
                     "end_date": event.get("end_date"),
                     "external_url": external_url_value if external_url_value and str(external_url_value).strip() != str(url).strip() else None,
@@ -746,7 +835,7 @@ async def scrape_source(client: AsyncClient, source: dict) -> dict:
             # Insert event
             await client.table("events").insert({
                 "title": event["title"],
-                "description": event.get("description"),
+                "description": _clean_description(event.get("description")),
                 "location": event.get("location", "Suceava"),
                 "start_date": event["start_date"],
                 "end_date": event.get("end_date"),
@@ -818,22 +907,20 @@ async def extract_events_with_ai(content: str, source_url: str, source_name: str
     system_prompt = """You are an expert at extracting event information from web content.
 Extract all events you can find from the provided text. For each event, extract:
 - title: The name/title of the event
-- description: 2-4 sentences with concrete details from the text (what happens, who is it for, key highlights). Do NOT use generic filler.
+- description: A clear, complete description based on the source text. Include all important details you can find.
+  Do NOT truncate the description and DO NOT end it with ellipses ("...").
 - organizer_name: The real organizer name if explicitly mentioned (e.g., USV, a faculty, a club, Primaria Suceava). If not stated, omit or leave empty.
 - location: Where the event takes place
 - start_date: The start date and time in ISO 8601 format. If the text says “ora 17:00”, keep that exact local time.
 - end_date: The end date and time in ISO 8601 format (if available)
-- external_url: A link to more information (if available)
-- category: One of: Academic, Cultural, Sport, Social, Cariera, Voluntariat, Tech
+- external_url: The link to the event page if present
+- category: A category name if you can infer it (e.g. Cultural, Academic, Sport, Workshop)
 
-Language requirement:
-- Keep the description in the SAME language as the source content.
-- If the content is Romanian or mixed Romanian/English, write the description in Romanian.
-- Do NOT translate Romanian content into English.
-
-Return ONLY a valid JSON array of event objects. If no events are found, return an empty array [].
-Do not include any explanation or markdown, just the JSON array.
-
+Rules:
+- Return only valid JSON
+- Do not include any additional text
+- Use null for missing optional fields
+- Dates must be ISO 8601
 Important:
 - For dates, use the current year if not specified
 - Convert Romanian month names to numbers
@@ -846,14 +933,39 @@ Important:
 
 Return only a JSON array of events."""
 
-    async def _gemini_generate(prompt_text: str) -> str:
+    async def _gemini_generate(prompt_text: str, use_schema: bool = True) -> str:
         gemini_base = "https://generativelanguage.googleapis.com/v1beta/models"
+        # Try flash family first, then pro as a fallback. Each call has a tight
+        # timeout so the total budget stays within the per-source limit.
         model_candidates = [
             "gemini-2.5-flash",
             "gemini-2.0-flash",
             "gemini-2.0-flash-001",
             "gemini-2.5-pro",
         ]
+        generation_config: dict = {
+            "temperature": 0.1,
+            "maxOutputTokens": 4000,
+            "responseMimeType": "application/json",
+        }
+        if use_schema:
+            generation_config["responseSchema"] = {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "title": {"type": "STRING"},
+                        "description": {"type": "STRING"},
+                        "organizer_name": {"type": "STRING"},
+                        "location": {"type": "STRING"},
+                        "start_date": {"type": "STRING"},
+                        "end_date": {"type": "STRING"},
+                        "external_url": {"type": "STRING"},
+                        "category": {"type": "STRING"},
+                    },
+                    "required": ["title", "start_date"],
+                },
+            }
         payload = {
             "contents": [
                 {
@@ -861,38 +973,17 @@ Return only a JSON array of events."""
                     "parts": [{"text": prompt_text}],
                 }
             ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 4000,
-                "responseMimeType": "application/json",
-                "responseSchema": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "title": {"type": "STRING"},
-                            "description": {"type": "STRING"},
-                            "organizer_name": {"type": "STRING"},
-                            "location": {"type": "STRING"},
-                            "start_date": {"type": "STRING"},
-                            "end_date": {"type": "STRING"},
-                            "external_url": {"type": "STRING"},
-                            "category": {"type": "STRING"},
-                        },
-                        "required": ["title", "start_date"],
-                    },
-                },
-            },
+            "generationConfig": generation_config,
         }
 
         last_error: Optional[str] = None
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             for model in model_candidates:
                 url = f"{gemini_base}/{model}:generateContent"
                 try:
-                    # Small retry for transient upstream errors.
+                    # One quick retry only: anything more eats the per-source budget.
                     r = None
-                    for delay in (0.0, 0.6, 1.5):
+                    for delay in (0.0, 0.5):
                         if delay:
                             await asyncio.sleep(delay)
                         r = await client.post(
@@ -927,7 +1018,13 @@ Return only a JSON array of events."""
                     except Exception:
                         body = ""
                     last_error = f"Gemini HTTP {e.response.status_code}: {body}"
+                    # Try next model on transient upstream issues.
+                    if e.response.status_code in (429, 500, 502, 503, 504):
+                        continue
                     break
+                except httpx.RequestError as e:
+                    last_error = f"Gemini request error: {type(e).__name__}: {str(e)}"
+                    continue
 
         _ai_debug.set(f"gemini_error={last_error}")
         return ""
@@ -951,6 +1048,11 @@ Return only a JSON array of events."""
                 + "\n"
             )
             result_text = await _gemini_generate(prompt)
+            # Strict JSON schema sometimes makes the model return "[]" when it is
+            # unsure. Retry once without the schema so the model can produce a
+            # looser but still valid JSON array.
+            if (not result_text) or result_text.strip() in ("[]", ""):
+                result_text = await _gemini_generate(prompt, use_schema=False)
             if not result_text:
                 return []
         else:

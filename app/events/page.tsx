@@ -21,12 +21,34 @@ export default function PublicEventsPage() {
   const [selectedOrganizer, setSelectedOrganizer] = useState<string>("all")
   const [selectedMode, setSelectedMode] = useState<string>("all")
   const [operator, setOperator] = useState<'and' | 'or'>('and')
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  async function handleDeleteEvent(eventId: string) {
+    const supabase = createClient()
+    const { error } = await supabase.from("events").delete().eq("id", eventId)
+    if (error) {
+      alert(`Stergere esuata: ${error.message}`)
+      return
+    }
+    setEvents((prev) => prev.filter((e) => e.id !== eventId))
+  }
 
   useEffect(() => {
     async function fetchData() {
       const supabase = createClient()
       
       try {
+        // Check if current user is admin
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", user.id)
+            .single()
+          setIsAdmin(profile?.role === "admin")
+        }
+
         // Fetch categories
         const { data: categoriesData, error: catError } = await supabase
           .from("categories")
@@ -212,7 +234,12 @@ export default function PublicEventsPage() {
         ) : filteredEvents.length > 0 ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {filteredEvents.map((event) => (
-              <EventCard key={event.id} event={event} />
+              <EventCard
+                key={event.id}
+                event={event}
+                canDelete={isAdmin}
+                onDelete={handleDeleteEvent}
+              />
             ))}
           </div>
         ) : (

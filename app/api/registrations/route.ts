@@ -20,6 +20,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // Ensure a corresponding profiles row exists (event_registrations.user_id FK -> profiles.id)
+  // This can be missing for OAuth users if the profile wasn't created yet.
+  const email = user.email
+  if (email) {
+    const fullName = (user.user_metadata as any)?.full_name || (user.user_metadata as any)?.name || null
+    const avatarUrl = (user.user_metadata as any)?.avatar_url || null
+
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id,role')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (!existingProfile) {
+      await supabase.from('profiles').insert({
+        id: user.id,
+        email,
+        full_name: fullName,
+        role: 'student',
+        avatar_url: avatarUrl,
+        updated_at: new Date().toISOString(),
+      })
+    } else {
+      await supabase
+        .from('profiles')
+        .update({
+          email,
+          full_name: fullName,
+          avatar_url: avatarUrl,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', user.id)
+    }
+  }
+
   let body: { eventId?: string; action?: Action }
   try {
     body = await request.json()

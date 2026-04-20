@@ -82,8 +82,8 @@ export interface Subscription {
   organizer_id: string | null
   created_at: string
   // Joined fields
-  category?: Category
-  organizer?: Profile
+  category?: Category | null
+  organizer?: Profile | null
 }
 
 export interface Notification {

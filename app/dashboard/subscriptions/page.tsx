@@ -20,15 +20,19 @@ export default async function SubscriptionsPage() {
   // Get user's subscriptions
   const { data: subscriptions } = await supabase
     .from('subscriptions')
-    .select(`
-      *,
-      category:categories(*),
-      organizer:profiles(*)
-    `)
+    .select('*')
     .eq('user_id', user.id)
 
   const typedCategories = (categories || []) as Category[]
-  const typedSubscriptions = (subscriptions || []) as (Subscription & { category: Category | null; organizer: Profile | null })[]
+  const typedSubscriptions = (subscriptions || []) as Subscription[]
+
+  const categorySubscriptions: (Subscription & { category: Category | null; organizer: Profile | null })[] = typedSubscriptions
+    .filter((s) => Boolean(s.category_id))
+    .map((s) => ({
+      ...s,
+      category: s.category_id ? typedCategories.find((c) => c.id === s.category_id) || null : null,
+      organizer: null,
+    }))
 
   return (
     <div className="space-y-6">
@@ -50,7 +54,7 @@ export default async function SubscriptionsPage() {
           <CardContent>
             <CategorySubscriptions 
               categories={typedCategories} 
-              subscriptions={typedSubscriptions}
+              subscriptions={categorySubscriptions}
               userId={user.id}
             />
           </CardContent>
@@ -64,9 +68,9 @@ export default async function SubscriptionsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {typedSubscriptions.filter(s => s.category).length > 0 ? (
+            {categorySubscriptions.filter(s => s.category).length > 0 ? (
               <SubscriptionsList 
-                subscriptions={typedSubscriptions.filter(s => s.category)} 
+                subscriptions={categorySubscriptions.filter(s => s.category)} 
               />
             ) : (
               <div className="flex flex-col items-center justify-center py-8 text-center">
